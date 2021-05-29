@@ -1,0 +1,828 @@
+---
+title: "Housing Price Prediction"
+author: "Jie Tao"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    fig_height: 6
+    fig_width: 7
+    toc: yes
+    toc_float: yes
+    highlight: kate
+    theme: readable
+    df_print: paged
+---
+
+## Background
+
+This project predicts the selling price of a given home in Ames, Iowa. I hope to use this information to help assess whether the asking price of a house is higher or lower than the true value of the house. If the home is undervalued, it may be a good investment.
+
+## Training Data and relevant packages
+
+In order to better assess the quality of the model produced, the data have been randomly divided into three separate pieces: a training data set, a testing data set, and a validation data set. For now I will load the training data set, the others will be loaded and used later.
+
+```{r load, message = FALSE}
+load("ames_train.Rdata")
+```
+
+Use the code block below to load any necessary packages
+
+```{r packages, message=FALSE}
+library(MASS)
+library(tidyverse)
+library(scales)
+library(statsr)
+library(olsrr)
+library(broom)
+library(BAS)
+library(GGally)
+library(ggpubr)
+theme_set(theme_light())
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+## Part 1 - Exploratory Data Analysis (EDA)
+
+------------------------------------------------------------------------
+
+The data sets used in this analysis contain information on house sales and physical features of houses in Ames, Iowa. **Since the data collection process does not follow random experimental assignment, the results cannot be used for causal inference**. However, **the results can be generalized to the whole city of Ames, Iowa** given the data covers houses from different neighborhoods in the city with varied physical features.
+
+### Data Cleaning
+
+Before conducting the exploratory data analysis (EDA), I will first examine whether the training data is "clean".
+
+```{r}
+ames_train %>% 
+  skimr::skim()
+```
+
+Based on the [code book](http://jse.amstat.org/v19n3/decock/DataDocumentation.txt) and summary statistics above, several variables (i.e., `PID`, `MS.SubClass`, `Overall.Qual`, `Overall.Cond`) are coded as numeric variables instead of their proper format - factors. Therefore, the first step is to reformat them into factors.
+
+```{r}
+ames_train <- ames_train %>% 
+  mutate(across(.cols = c(PID, MS.SubClass, Overall.Qual, Overall.Cond),
+                .fns = factor)) %>% 
+  mutate(MS.SubClass = factor(MS.SubClass, levels = c(020, 030, 040, 045, 050, 060,
+                                                      070, 075, 080, 085, 090, 120,
+                                                      150, 160, 180, 190), 
+                              labels = c("1-STORY 1946 & NEWER ALL STYLES",
+                                         "1-STORY 1945 & OLDER",
+                                         "1-STORY W/FINISHED ATTIC ALL AGES",
+                                         "1-1/2 STORY - UNFINISHED ALL AGES",
+                                         "1-1/2 STORY FINISHED ALL AGES",
+                                         "2-STORY 1946 & NEWER",
+                                         "2-STORY 1945 & OLDER",
+                                         "2-1/2 STORY ALL AGES",
+                                         "SPLIT OR MULTI-LEVEL",
+                                         "SPLIT FOYER",
+                                         "DUPLEX - ALL STYLES AND AGES",
+                                         "1-STORY PUD - 1946 & NEWER",
+                                         "1-1/2 STORY PUD - ALL AGES",
+                                         "2-STORY PUD - 1946 & NEWER",
+                                         "PUD - MULTILEVEL - INCL SPLIT LEV/FOYER",
+                                         "2 FAMILY CONVERSION - ALL STYLES AND AGES")),
+         Overall.Qual = factor(Overall.Qual, levels = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+                               labels = c("Very Poor", "Poor", "Fair", "Below Average",
+                                          "Average", "Above Average", "Good",
+                                          "Very Good", "Excellent", "Very Excellent")),
+         Overall.Qual = relevel(Overall.Qual, ref = 10),
+         Overall.Cond = factor(Overall.Cond, levels = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+                               labels = c("Very Poor", "Poor", "Fair", "Below Average",
+                                          "Average", "Above Average", "Good",
+                                          "Very Good", "Excellent", "Very Excellent")),
+         Overall.Cond = relevel(Overall.Cond, ref = 10))
+
+ames_train %>% 
+  count(MS.SubClass)
+
+ames_train %>% 
+  count(Overall.Qual)
+
+ames_train %>% 
+  count(Overall.Cond)
+```
+
+After further examining the code book, several categorical variables contain **NAs** that are not actually missing values. Rather, those are indicators of non-existence of particular features for the house. For example, one of the variables - `Alley` has 933 observations coded as **NA**, which stand for "No alley access to property". Among all 81 variables, several other categorical variables have similar issues. Therefore, replacing misidentified NAs is the second essential step.
+
+```{r}
+ames_train <- ames_train %>% 
+  mutate(across(.cols = c(Alley, Bsmt.Qual, Bsmt.Cond, Bsmt.Exposure, BsmtFin.Type.1,
+                          BsmtFin.Type.2, Fireplace.Qu, Garage.Type, Garage.Finish,
+                          Garage.Qual, Garage.Cond, Pool.QC, Fence, Misc.Feature),
+                .fns = as.character))
+
+ames_train <- ames_train %>% 
+    mutate(across(.cols = c(Alley, Bsmt.Qual, Bsmt.Cond, Bsmt.Exposure, BsmtFin.Type.1,
+                          BsmtFin.Type.2, Fireplace.Qu, Garage.Type, Garage.Finish,
+                          Garage.Qual, Garage.Cond, Pool.QC, Fence, Misc.Feature),
+                .fns = ~replace_na(.x, "No")))
+
+ames_train_cleaned <- ames_train %>% 
+    mutate(across(.cols = c(Alley, Bsmt.Qual, Bsmt.Cond, Bsmt.Exposure, BsmtFin.Type.1,
+                          BsmtFin.Type.2, Fireplace.Qu, Garage.Type, Garage.Finish,
+                          Garage.Qual, Garage.Cond, Pool.QC, Fence, Misc.Feature),
+                .fns = as.factor))
+
+ames_train_cleaned %>% 
+  skimr::skim()
+```
+
+As shown from the new summary statistics, all variables are in their proper format and misidentified NAs are re-coded. Specifically, no missing values are identified from the categorical variables while most numeric variables are without missing values except for `Lot.Frontage` with 167 missing and `Garage.Yr.Blt` with 48 missing. Next step is to conduct the EDA by building three plots.
+
+### Three Plots
+
+Given that the data set contains 81 variables, it is impractical to explore each exploratory variable that may be associated with the house price (i.e., response variable). I will apply **two criteria** to select **three exploratory variables** obtaining potentially strong associations with house price:
+
+1. These variables should be distinctive:
+
+    +  Numeric or categorical variables
+    +  Objective or subjective data
+
+2. These variables should reflect the practical knowledge that has been widely agreed in real estate industry regarding the housing price.
+
+#### Plot 1 - Does the size matter?
+
+Holding other factors constant, the house price should be associated with its size. The larger the size of a house, the higher the price should be. The following scatter plot strives to explore this potential relationship.
+
+```{r creategraphs}
+ames_train_cleaned %>% 
+  ggplot(aes(area, price)) +
+  geom_point(alpha = 0.5, color = "darkred") +
+  geom_smooth(method = "lm") +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x = "House Size in Square Feet (Logged)",
+       y = "House Price in Dollars (Logged)",
+       title = "Scatter Plot of House Size vs. House Price")
+```
+
+The scatter plot clearly indicates a **strong association** between the house size in square feet and the house price in dollars.
+
+### Plot 2 - Does the location matter?
+
+The mantra in real estate is "Location, Location, Location!" Hence, I will explore whether houses located in different neighborhoods have varied prices.
+
+```{r}
+ames_train_cleaned %>% 
+    ggplot(aes(fct_reorder(Neighborhood, price), price,
+               color = Neighborhood, fill = Neighborhood)) +
+    geom_boxplot(show.legend = FALSE, alpha = 0.3) +
+    coord_flip() +
+    scale_y_continuous(labels = dollar) +
+    labs(x = NULL,
+         y = "House Price",
+         title = "House Price by Neighborhood")
+```
+
+As expected, the median house prices fluctuate across different neighborhoods, with the **highest median price in Stone Brook** and the **lowest in Meadow Village**.
+
+### Plot 3 - Does the perception matter?
+
+Beyond the objective features, perceptions of the overall quality of a house in terms of its material and finish could potential affect the price.
+
+```{r}
+ames_train_cleaned %>% 
+    ggplot(aes(fct_reorder(Overall.Qual, price), price, color = Overall.Qual,
+               fill = Overall.Qual)) +
+    geom_boxplot(show.legend = FALSE, alpha = 0.7) +
+    coord_flip() +
+    scale_y_continuous(labels = dollar) +
+    labs(x = NULL,
+         y = "House Price",
+         title = "House Price by Perceptions of Overall House Quality")
+```
+
+The boxplot does discover that **a higher level of ratings on overall house quality is associated with higher house price**.
+
+Although all three plots find evidence on potential explanatory variables, it is worth noting that **this selection process is somewhat arbitrary** even after following the two criteria. Other variables may have stronger associations with house price. Therefore, I will **perform a scientifically rigorous model selection process** in the next section.
+
+------------------------------------------------------------------------
+
+## Part 2 - Development and assessment of an initial model, following a semi-guided process of analysis
+
+### Section 2.1 An Initial Model
+
+------------------------------------------------------------------------
+
+After exploring the [code book](http://jse.amstat.org/v19n3/decock/DataDocumentation.txt), all variables except `PID` (Parcel identification number) are potentially related to the house price. Nonetheless, categorical variable - `Utilities` (type of utilities available) contains only one type (i.e., `AllPub`) that causes the issue of no variance, I will drop this variable. As a result, I will build a full model by excluding `PID` and `Utilities`. All missing values are omitted to facilitate the usage of the stepwise model selection technique.
+
+```{r fit_model}
+model_df <- ames_train_cleaned %>% 
+  select(-PID, -Utilities) %>% 
+  na.omit()
+full_model <- lm(price ~ ., data = model_df)
+summary(full_model)
+```
+
+The full model has a total of **78 explanatory variables** and an **adjusted R-squared of roughly 0.93**, indicating 93 percent of variance in house price is explained by the 78 explanatory variables. **The model may be overly complicated**, thus I will conduct some model selection in the next section.
+
+------------------------------------------------------------------------
+
+### Section 2.2 Model Selection
+
+------------------------------------------------------------------------
+
+I used stepwise selection based on Akaike information criterion (AIC) and Bayesian information criterion (BIC). The AIC model reduced the **total variables to 37 and still maintained an adjusted R-squared at about 0.93**, meaning that the 37 exploratory variables capture 93 percent of the variance in house price. It further implies that nearly half of the 78 variables included in the full model does not explain the variance in house price. The AIC model seems to be a very good model but may not be parsimonious.
+
+```{r, results='hide'}
+AIC_model <- stepAIC(full_model, k = 2)
+```
+
+```{r}
+summary(AIC_model)
+```
+
+The BIC model further reduced the **explanatory variables to 18** and still managed to achieve the **adjusted R-squared at about 0.91**.
+
+```{r, results='hide'}
+BIC_model <- stepAIC(full_model, k = log(781))
+```
+
+```{r}
+summary(BIC_model)
+```
+
+Building on the BIC model, another stepwise forward selection based on p-value also generated 18 predictors as the "best" model.
+
+```{r}
+(step_forward_p <- ols_step_forward_p(BIC_model))
+plot(step_forward_p)
+```
+
+However, **it is clear that the adjusted R-squared does not increase significantly after including more than 10 variables**. The AIC and RMSE also does not decline substantially after more than 10 variables are in the model. Thus, I will manually **select the top 10 features to construct the initial model.**
+
+```{r}
+initial_model <- lm(price ~ Overall.Qual + area + BsmtFin.SF.1 + Exter.Qual + Condition.2 + Garage.Area + Bldg.Type + Year.Built + Lot.Area + Sale.Condition, data = model_df)
+summary(initial_model)
+```
+
+**This model is largely consistent with the variables identified from the EDA** except that the variable - `Neighborhood` is substituted by the `Condition.2` (proximity to various conditions such as adjacent to arterial street), both of which can be proxies of the house location. I ran another model with `Neighborhood` and the adjusted r-squared is similar while `Condition.2` has much fewer categories that makes the interpretation easier. Thus, I decided to stick to the current model. **The initial model contains 10 explanatory variables and the adjusted R-squared is roughly 0.89.**
+
+```{r}
+summary(lm(price ~ Overall.Qual + area + BsmtFin.SF.1 + Exter.Qual + Neighborhood + Garage.Area + Bldg.Type + Year.Built + Lot.Area + Sale.Condition, data = model_df))
+```
+
+------------------------------------------------------------------------
+
+### Section 2.3 Initial Model Residuals
+
+------------------------------------------------------------------------
+
+One indicator of a good model is that the residuals should meet the assumption of normally distributed.
+
+```{r}
+initial_model %>% 
+  augment() %>% 
+  ggplot(aes(.resid)) +
+  geom_histogram(color = "black", fill = "lightblue") +
+  labs(x = "Residuals",
+       y = "Count",
+       title = "Distribution of Residuals")
+```
+
+The histogram shows that residuals are close to normally distributed.
+
+```{r}
+initial_model %>% 
+  augment() %>% 
+  ggplot(aes(.fitted, .resid)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red", size = 1) +
+  scale_x_continuous(labels = dollar) +
+  scale_y_continuous(labels = dollar) +
+  labs(x = "Estimated House Price",
+       y = "Residuals",
+       title = "Residuals vs. Fitted Values Plot")
+```
+
+Another indicator is that the residuals should be constant, meaning that they do not vary as the fitted value increases. The residuals vs. fitted values plot does not capture any significant increase or decrease of residuals as the estimated house price increases. However, some expensive houses do have relatively large positive residuals, suggesting the model underestimated the price of several expensive houses.
+
+------------------------------------------------------------------------
+
+### Section 2.4 Initial Model RMSE
+
+------------------------------------------------------------------------
+
+Root Mean Square Error (RMSE) is an indicator of a good model because it shows how concentrated the data is around the best fitting line. The more concentrated they are, the better the prediction.
+
+```{r}
+(initial_model_train_rmse <- sqrt(mean((model_df$price - predict(initial_model))^2)))
+```
+
+**The RMSE of the initial model is about \$27501**, indicating that the model, on average, either over-predicts or under-predicts the house price by about 27501 dollars.
+
+------------------------------------------------------------------------
+
+### Section 2.5 Overfitting
+
+To find out how well the trained model perform, it is important to apply the trained model to the test dataset.
+
+```{r loadtest, message = FALSE}
+load("ames_test.Rdata")
+
+ames_test %>% 
+  skimr::skim()
+```
+
+------------------------------------------------------------------------
+
+#### Clean test data set
+
+Before making predictions, it is essentially to clean the test data given it also has the issue of improperly coded data and missing values for categorical variables. Hence, a similar data cleaning process will be performed.
+
+```{r}
+ames_test <- ames_test %>% 
+  mutate(across(.cols = c(PID, MS.SubClass, Overall.Qual, Overall.Cond),
+                .fns = factor)) %>% 
+  mutate(MS.SubClass = factor(MS.SubClass, levels = c(020, 030, 040, 045, 050, 060,
+                                                      070, 075, 080, 085, 090, 120,
+                                                      150, 160, 180, 190), 
+                              labels = c("1-STORY 1946 & NEWER ALL STYLES",
+                                         "1-STORY 1945 & OLDER",
+                                         "1-STORY W/FINISHED ATTIC ALL AGES",
+                                         "1-1/2 STORY - UNFINISHED ALL AGES",
+                                         "1-1/2 STORY FINISHED ALL AGES",
+                                         "2-STORY 1946 & NEWER",
+                                         "2-STORY 1945 & OLDER",
+                                         "2-1/2 STORY ALL AGES",
+                                         "SPLIT OR MULTI-LEVEL",
+                                         "SPLIT FOYER",
+                                         "DUPLEX - ALL STYLES AND AGES",
+                                         "1-STORY PUD - 1946 & NEWER",
+                                         "1-1/2 STORY PUD - ALL AGES",
+                                         "2-STORY PUD - 1946 & NEWER",
+                                         "PUD - MULTILEVEL - INCL SPLIT LEV/FOYER",
+                                         "2 FAMILY CONVERSION - ALL STYLES AND AGES")),
+         Overall.Qual = factor(Overall.Qual, levels = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+                               labels = c("Very Poor", "Poor", "Fair", "Below Average",
+                                          "Average", "Above Average", "Good",
+                                          "Very Good", "Excellent", "Very Excellent")),
+         Overall.Qual = relevel(Overall.Qual, ref = 10),
+         Overall.Cond = factor(Overall.Cond, levels = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+                               labels = c("Very Poor", "Poor", "Fair", "Below Average",
+                                          "Average", "Above Average", "Good",
+                                          "Very Good", "Excellent", "Very Excellent")),
+         Overall.Cond = relevel(Overall.Cond, ref = 10)) 
+
+ames_test <- ames_test %>% 
+  mutate(across(.cols = c(Alley, Bsmt.Qual, Bsmt.Cond, Bsmt.Exposure, BsmtFin.Type.1,
+                          BsmtFin.Type.2, Fireplace.Qu, Garage.Type, Garage.Finish,
+                          Garage.Qual, Garage.Cond, Pool.QC, Fence, Misc.Feature),
+                .fns = as.character))
+
+ames_test <- ames_test %>% 
+    mutate(across(.cols = c(Alley, Bsmt.Qual, Bsmt.Cond, Bsmt.Exposure, BsmtFin.Type.1,
+                          BsmtFin.Type.2, Fireplace.Qu, Garage.Type, Garage.Finish,
+                          Garage.Qual, Garage.Cond, Pool.QC, Fence, Misc.Feature),
+                .fns = ~replace_na(.x, "No")))
+
+ames_test_cleaned <- ames_test %>% 
+    mutate(across(.cols = c(Alley, Bsmt.Qual, Bsmt.Cond, Bsmt.Exposure, BsmtFin.Type.1,
+                          BsmtFin.Type.2, Fireplace.Qu, Garage.Type, Garage.Finish,
+                          Garage.Qual, Garage.Cond, Pool.QC, Fence, Misc.Feature),
+                .fns = as.factor))
+
+```
+
+#### Comparing RMSE between training and test data sets
+
+```{r initmodel_test}
+# training data
+(initial_model_train_rmse <- sqrt(mean((model_df$price - predict(initial_model))^2)))
+
+# testing data
+model_df_test <- ames_test_cleaned %>% 
+  select(-PID, -Utilities) %>% 
+  na.omit()
+(initial_model_test_rmse <- sqrt(mean((model_df_test$price - predict(initial_model, model_df_test))^2)))
+
+initial_model_train_rmse > initial_model_test_rmse
+```
+
+The RMSE for the training data is at about **27501 dollars** while the RMSE for the testing data is at **26231 dollars**, suggesting that the model prediction performed slight better on testing data set. Another way to assess how well a model reflects uncertainty is to determine coverage probability. For example, if assumptions are met, a 95% prediction interval for `price` should include the true value of `price` roughly 95% of the time. Thus, I will calculate the coverage probability as follows:
+
+```{r}
+# Predict prices
+predict_initial_model_test <- predict(initial_model, model_df_test, interval = "prediction")
+
+# Calculate proportion of observations that fall within prediction intervals
+(coverage_initial_model <- mean(model_df_test$price > predict_initial_model_test[,"lwr"] &
+                            model_df_test$price < predict_initial_model_test[,"upr"]))
+```
+
+The model captures the true house price approximately **96.6%** of the time.
+
+------------------------------------------------------------------------
+
+## Part 3 Development of a Final Model
+
+
+### Section 3.1 Final Model
+
+------------------------------------------------------------------------
+
+Given the promising test results from my initial model, I will construct the final model by 1) transforming some variables (e.g., `price`) that are not normally distributed, 2) adding interaction terms to address potential interactions among explanatory variables, and 3) dropping variables in the current model. The following is a summary of the initial model built from last section.
+
+```{r model_playground}
+summary(initial_model)
+```
+
+------------------------------------------------------------------------
+
+### Section 3.2 Transformation
+
+------------------------------------------------------------------------
+
+Some variables in the initial model are likely not to be normally distributed given their natural boundary at 0 and they tend to be right skewed. For example, `price`, `area`, `Garage.Area`, `BsmtFin.SF.1`, and `Lot.Area` are bounded at 0 and are very likely to be right skewed given that the price and size of a house cannot be negative. The variable `Year.Built` has a more limited range from 1880 to 2010.
+
+```{r model_assess}
+model_df %>% 
+  select(price, area, BsmtFin.SF.1, Garage.Area, Lot.Area, Year.Built) %>% 
+  ggpairs(title = "Density, Correlation, and Scatter Plots of Price vs. Continuous Variables",
+          mapping = aes(alpha = 0.3))
+
+model_df %>% 
+  summarize(across(.cols = c(price, area, BsmtFin.SF.1,
+                             Garage.Area, Lot.Area, Year.Built),
+                   .fns = min, .names = "{.col}_min"))
+```
+
+The speculation is confirmed. Non of these variables are normally distributed and all but `Year.Built` are right skewed to a certain extent. Therefore, **it is appropriate to log transform all variables except `Year.Built`.** In addition, the summary table indicates that `BsmtFin.SF.1` has a minimum value of 0, meaning that it is necessary to **add 1** before transforming the variable (since $\log(0) = -\infty$).
+
+In regard to categorical variables, issues such as unbalanced categories may influence the model. Let's visualize them through box and bar plots.
+
+```{r}
+model_df %>% 
+  select(price, Overall.Qual, Exter.Qual, Condition.2, Bldg.Type, Sale.Condition) %>% 
+  ggpairs(title = "Density, Box, and Bar Plots of Price vs. Categorical Variables",
+          mapping = aes(alpha = 0.3),
+          lower = "blank")
+
+model_df %>% 
+  count(Overall.Qual)
+model_df %>% 
+  count(Exter.Qual)
+model_df %>% 
+  count(Condition.2)
+model_df %>% 
+  count(Bldg.Type)
+model_df %>% 
+  count(Sale.Condition)
+```
+
+Based on the boxplots, it seems that `Overall.Qual` and `Sale.Condition` are strong predictors of house price. The barplots show that **variables such as `Condtion.2` and `Bldg.Type`, and `Sale.Condition` are significantly unbalanced across different categories.** This can be seen from the summary statistics as well. Given the majority of houses have `Condition.2` as `Norm` indicating their house proximity to various conditions is normal, I will re-code this variable as `Norm` or `Not.Norm`. Similarly transformation will be applied to `Bldg.Type` given that most building type is `1Fam` (single-family detached building). Nonetheless, the `Sale.Condition` will be kept the same given it might be important to know which house is sold under normal condition.
+
+```{r}
+model_df <- model_df %>% 
+  mutate(Condition.2_dummy = ifelse(Condition.2 == "Norm", "Norm", "Not.Norm"),
+         Bldg.Type_dummy = ifelse(Bldg.Type == "1Fam", "1Fam", "Not.1Fam"))
+```
+
+```{r}
+summary(lm(log(price) ~ Overall.Qual + log(area) + log(BsmtFin.SF.1 + 1) + Exter.Qual + Condition.2_dummy + log(Garage.Area) + Bldg.Type_dummy + Year.Built + log(Lot.Area) + Sale.Condition, data = model_df))
+```
+
+The new model with transformed variables achieves **a slightly lower adjusted R-squared at 0.87**, which is **0.02 point lower** than the initial model. The model is still not fine-tuned. Let us try some other approaches to improve the model.
+
+------------------------------------------------------------------------
+
+### Section 3.3 Variable Interaction
+
+------------------------------------------------------------------------
+
+Among the explanatory variables, some may interact with each other. For instance, the built time of a house (`Year.Built`) may interact with its `Overall.Qual`. Below is the summary of the new model with the interaction term included. **The adjusted R-squared is slight improved but the significance level of `Year.Built` decreased dramatically**.
+
+```{r model_inter}
+summary(lm(log(price) ~ Overall.Qual*Year.Built + log(area) + log(BsmtFin.SF.1 + 1) + Exter.Qual + Condition.2_dummy + log(Garage.Area) + Bldg.Type_dummy + log(Lot.Area) + Sale.Condition, data = model_df))
+```
+
+------------------------------------------------------------------------
+
+### Section 3.4 Variable Selection
+
+------------------------------------------------------------------------
+
+To further examining whether including the interaction term is necessary, I will use the **Bayesian Model Averaging method** to selection the model again.
+
+```{r model_select}
+model_bas <- bas.lm(log(price) ~ Overall.Qual*Year.Built + log(area) + log(BsmtFin.SF.1 + 1) + Exter.Qual + Condition.2_dummy + log(Garage.Area) + Bldg.Type_dummy + log(Lot.Area) + Sale.Condition, data = model_df, prior = "BIC", modelprior = uniform())
+summary(model_bas)
+image(model_bas, rotate = F)
+```
+
+**The results do not favor the inclusion of the interaction term and variable `Condition.2`.** The `Sale.Condition` is also questionable because houses with non-normal selling conditions may exhibit atypical behavior and can disproportionately influence the model, I decide to model housing prices under only **normal sale conditions**.
+
+```{r}
+final_model_df <- model_df %>% 
+  filter(Sale.Condition == "Normal")
+final_model <- lm(log(price) ~ Overall.Qual + log(area) + log(BsmtFin.SF.1 + 1) + Exter.Qual + log(Garage.Area) + Bldg.Type_dummy + Year.Built + log(Lot.Area), data = final_model_df)
+summary(final_model)
+```
+
+**The final model is very promising given it reduce the total explanatory variables to 8 (comparing to 10 in the initial model) while maintaining the adjusted r-squared at around 0.89.**
+
+------------------------------------------------------------------------
+
+### Section 3.5 Model Testing
+
+------------------------------------------------------------------------
+
+To further test the model, I will conduct some out-of-sample predictions on the test data set.
+
+```{r}
+# Predict prices
+
+final_model_df_test <- ames_test_cleaned %>% 
+  select(-PID, -Utilities) %>% 
+  na.omit() %>%
+  mutate(Condition.2_dummy = ifelse(Condition.2 == "Norm", "Norm", "Not.Norm"),
+         Bldg.Type_dummy = ifelse(Bldg.Type == "1Fam", "1Fam", "Not.1Fam")) %>% 
+  filter(Sale.Condition == "Normal")
+
+predict_final_model_test <- exp(predict(final_model, final_model_df_test, interval = "prediction"))
+
+# Calculate proportion of observations that fall within prediction intervals
+(coverage_final_model_test <- mean(final_model_df_test$price > predict_final_model_test[,"lwr"] &
+                            final_model_df_test$price < predict_final_model_test[,"upr"]))
+```
+
+The final model captures the true house price approximately **95.3%** of the time. Hence, the assumptions are met, which indicate a 95% prediction interval for `price` should include the true value of `price` roughly 95% of the time. As a result, I will not change anything from the final model.
+
+------------------------------------------------------------------------
+
+## Part 4 Final Model Assessment
+
+### Section 4.1 Final Model Residual
+
+------------------------------------------------------------------------
+
+One way to assess how well the final model perform is to look at residuals and compare it to the initial model.
+
+```{r}
+# build a new dataframe including residuals from both inital and final model
+initial_plot <- initial_model %>% 
+  augment() %>% 
+  mutate(residual = .resid, model = "initial_model") %>% 
+  select(price, residual, .fitted, model)
+
+final_plot <- final_model %>% 
+  augment_columns(final_model_df) %>% 
+  mutate(.fitted = exp(.fitted), residual = price - .fitted, model = "final_model") %>% 
+  select(price, residual, .fitted, model)
+
+initial_final_plot <- bind_rows(initial_plot, final_plot)
+```
+
+```{r}
+initial_final_plot %>% 
+  ggplot(aes(residual, fill = model)) +
+  geom_histogram(color = "black", alpha = 0.2, show.legend = FALSE) +
+  facet_wrap(~model, nrow = 2) +
+  labs(x = "Residuals",
+       y = "Count",
+       fill = "Model",
+       title = "Distribution of Residuals",
+       subtitle = "Compared between Initial and Final Models")
+```
+
+Holistically, the residuals are normally distributed in both the initial and final models and, more importantly, fewer residuals are away from zero in final model than initial model, implying that the final model predicts the house price with higher precision.
+
+```{r}
+initial_final_plot %>% 
+  ggplot(aes(.fitted, residual)) +
+  geom_point(aes(color = model), alpha = 0.3, show.legend = FALSE) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red", size = 1) +
+  facet_wrap(~model) +
+  scale_x_continuous(labels = dollar) +
+  scale_y_continuous(labels = dollar) +
+  labs(x = "Estimated House Price",
+       y = "Residuals",
+       title = "Residuals vs. Fitted Values Plot",
+       subtitle = "Compated between Initial and Final Models") +
+  theme(axis.text.x = element_text(size = 8))
+```
+
+Further, residuals are randomly scattered around horizontal line and it is also clear that the deviations of the residuals are smaller in the final model. For example, one residual in the initial model is more than **\$200,000** and it suggests the model **under-estimated** the house price for that point. However, the biggest under-estimation in the final model is slightly above **\$150,000**. The model improved significant in the accuracy of prediction.
+
+```{r model_resid, include=FALSE, eval=FALSE}
+initial_model_hist <- initial_model %>% 
+  augment() %>% 
+  ggplot(aes(.resid)) +
+  geom_histogram(color = "black", fill = "lightblue") +
+  labs(x = "Residuals",
+       y = "Count",
+       title = "Distribution of Residuals (Initial Model)")
+
+final_model_hist <- final_model %>% 
+  augment_columns(final_model_df) %>% 
+  select(price, .resid, .fitted) %>% 
+  mutate(residual = price - exp(.fitted)) %>% 
+  ggplot(aes(residual)) +
+  geom_histogram(color = "black", fill = "darkred") +
+  labs(x = "Residuals",
+       y = "Count",
+       title = "Distribution of Residuals (Final Model)")
+
+ggarrange(initial_model_hist, final_model_hist, nrow = 2)
+```
+
+```{r, include=FALSE, eval=FALSE}
+initial_model_residuals <- initial_model %>% 
+  augment() %>% 
+  ggplot(aes(.fitted, .resid)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red", size = 1) +
+  scale_x_continuous(labels = dollar) +
+  scale_y_continuous(labels = dollar) +
+  labs(x = "Estimated House Price",
+       y = "Residuals",
+       title = "Residuals vs. Fitted Values Plot (Initial Model)")
+
+final_model_residuals <- final_model %>% 
+  augment_columns(final_model_df) %>% 
+  select(price, .resid, .fitted) %>% 
+  mutate(residual = price - exp(.fitted)) %>% 
+  ggplot(aes(exp(.fitted), residual)) +
+  geom_point(alpha = 0.5, color = "darkblue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red", size = 1) +
+  scale_x_continuous(labels = dollar) +
+  scale_y_continuous(labels = dollar, breaks = seq(-250000, 250000, 50000)) +
+  labs(x = "Estimated House Price",
+       y = "Residuals",
+       title = "Residuals vs. Fitted Values Plot (Final Model)")
+
+ggarrange(initial_model_residuals, final_model_residuals, nrow = 2)
+```
+
+------------------------------------------------------------------------
+
+### Section 4.2 Final Model RMSE
+
+------------------------------------------------------------------------
+
+```{r model_testing}
+# training data
+(final_model_train_rmse <- sqrt(mean((final_model_df$price - exp(predict(final_model)))^2)))
+
+# testing data
+
+(final_model_test_rmse <- sqrt(mean((final_model_df_test$price - exp(predict(final_model, final_model_df_test)))^2)))
+
+final_model_train_rmse > final_model_test_rmse
+```
+
+------------------------------------------------------------------------
+
+The final model performed much better in terms of the RMSE reduction. The initial model achieved RMSEs at **27501 dollars** for training data and **26231 dollars** for testing data. The final model reduced the RMSEs to **22782 dollars** and **24192 dollars**. About **\$5000** improved for training data and **\$2000** for the testing data, meaning that the model will make less amount of over-or-under-predictions for the house price. In others words, a more accurate prediction than the initial model.
+
+------------------------------------------------------------------------
+
+### Section 4.3 Final Model Evaluation
+
+------------------------------------------------------------------------
+
+The final model has several strengths: 1. **Accurate**. The biggest strength of this model is its accuracy given that the prediction is, on average, about \$24,000 different from the actual price when predicting with known information such as overall quality and size of the house.\
+2. **Parsimonious**. The model only needs 8 inputs to predict, which makes it powerful and cost-effective given that collecting extra variables is costly.
+
+Admittedly, the model is not perfect. For example, the biggest drawback is that this model **only works for houses sold under "normal" condition** due to the drop of `Sale.Condition` from the final model.
+
+------------------------------------------------------------------------
+
+### Section 4.4 Final Model Validation
+
+```{r loadvalidation, message = FALSE}
+load("ames_validation.Rdata")
+```
+
+------------------------------------------------------------------------
+
+#### Clean validation data
+
+Since the validation data has the same variables like the training and testing data sets. It also has misidentified variable types and missing values. Thus, data cleaning is necessary.
+
+```{r}
+ames_validation <- ames_validation %>% 
+  mutate(across(.cols = c(PID, MS.SubClass, Overall.Qual, Overall.Cond),
+                .fns = factor)) %>% 
+  mutate(MS.SubClass = factor(MS.SubClass, levels = c(020, 030, 040, 045, 050, 060,
+                                                      070, 075, 080, 085, 090, 120,
+                                                      150, 160, 180, 190), 
+                              labels = c("1-STORY 1946 & NEWER ALL STYLES",
+                                         "1-STORY 1945 & OLDER",
+                                         "1-STORY W/FINISHED ATTIC ALL AGES",
+                                         "1-1/2 STORY - UNFINISHED ALL AGES",
+                                         "1-1/2 STORY FINISHED ALL AGES",
+                                         "2-STORY 1946 & NEWER",
+                                         "2-STORY 1945 & OLDER",
+                                         "2-1/2 STORY ALL AGES",
+                                         "SPLIT OR MULTI-LEVEL",
+                                         "SPLIT FOYER",
+                                         "DUPLEX - ALL STYLES AND AGES",
+                                         "1-STORY PUD - 1946 & NEWER",
+                                         "1-1/2 STORY PUD - ALL AGES",
+                                         "2-STORY PUD - 1946 & NEWER",
+                                         "PUD - MULTILEVEL - INCL SPLIT LEV/FOYER",
+                                         "2 FAMILY CONVERSION - ALL STYLES AND AGES")),
+         Overall.Qual = factor(Overall.Qual, levels = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+                               labels = c("Very Poor", "Poor", "Fair", "Below Average",
+                                          "Average", "Above Average", "Good",
+                                          "Very Good", "Excellent", "Very Excellent")),
+         Overall.Qual = relevel(Overall.Qual, ref = 10),
+         Overall.Cond = factor(Overall.Cond, levels = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+                               labels = c("Very Poor", "Poor", "Fair", "Below Average",
+                                          "Average", "Above Average", "Good",
+                                          "Very Good", "Excellent", "Very Excellent")),
+         Overall.Cond = relevel(Overall.Cond, ref = 10)) 
+
+ames_validation <- ames_validation %>% 
+  mutate(across(.cols = c(Alley, Bsmt.Qual, Bsmt.Cond, Bsmt.Exposure, BsmtFin.Type.1,
+                          BsmtFin.Type.2, Fireplace.Qu, Garage.Type, Garage.Finish,
+                          Garage.Qual, Garage.Cond, Pool.QC, Fence, Misc.Feature),
+                .fns = as.character))
+
+ames_validation <- ames_validation %>% 
+    mutate(across(.cols = c(Alley, Bsmt.Qual, Bsmt.Cond, Bsmt.Exposure, BsmtFin.Type.1,
+                          BsmtFin.Type.2, Fireplace.Qu, Garage.Type, Garage.Finish,
+                          Garage.Qual, Garage.Cond, Pool.QC, Fence, Misc.Feature),
+                .fns = ~replace_na(.x, "No")))
+
+ames_validation_cleaned <- ames_validation %>% 
+    mutate(across(.cols = c(Alley, Bsmt.Qual, Bsmt.Cond, Bsmt.Exposure, BsmtFin.Type.1,
+                          BsmtFin.Type.2, Fireplace.Qu, Garage.Type, Garage.Finish,
+                          Garage.Qual, Garage.Cond, Pool.QC, Fence, Misc.Feature),
+                .fns = as.factor))
+```
+
+#### RMSE on validation data
+
+To find the RMSE of the validation data, I use the prediction function to predict the fitted values for validation data set based on the final model.
+
+```{r model_validate}
+# training data
+(final_model_train_rmse <- sqrt(mean((final_model_df$price - exp(predict(final_model)))^2)))
+
+# validation data
+final_model_df_validation <- ames_validation_cleaned %>% 
+  select(-PID, -Utilities) %>% 
+  na.omit() %>%
+  mutate(Condition.2_dummy = ifelse(Condition.2 == "Norm", "Norm", "Not.Norm"),
+         Bldg.Type_dummy = ifelse(Bldg.Type == "1Fam", "1Fam", "Not.1Fam")) %>% 
+  filter(Sale.Condition == "Normal", Overall.Qual != "Very Poor")
+
+(final_model_validation_rmse <- sqrt(mean((final_model_df_validation$price - exp(predict(final_model, final_model_df_validation)))^2)))
+
+final_model_train_rmse > final_model_validation_rmse
+```
+
+**The final model's performance on the validation data set is even better.** The final model's RMSE for the testing data set is **24192 dollars** while it is reduced to only **21771 dollars** for the validation data set, which is even smaller than the RMSE of the training data at **22782 dollars**. As discussed before, the smaller the RMSE, the fewer mistakes the model makes when predicting the house price. Thus, the final model does not have the issue of overfitting to the training data. Instead, its predictive power to new data is stable.
+
+#### Coverage probability on validation data
+
+```{r}
+# Predict prices
+predict_final_model_validation <- exp(predict(final_model, final_model_df_validation, interval = "prediction"))
+
+# Calculate proportion of observations that fall within prediction intervals
+(coverage_final_model_validation <- mean(final_model_df_validation$price > predict_final_model_validation[,"lwr"] &
+                            final_model_df_validation$price < predict_final_model_validation[,"upr"]))
+```
+
+The coverage probability on validation data is at about **95.6%**, which means The final model captures the true house price approximately **95.3%** of the time for validation data. Hence, the assumptions are met.
+
+#### Overall comparision of RMSE and coverage probability
+
+```{r}
+tibble(data = c("train", "test", "validation"),
+       rmse = c(final_model_train_rmse,
+                final_model_test_rmse,
+                final_model_validation_rmse),
+       coverage = c(NA,
+                    coverage_final_model_test,
+                    coverage_final_model_validation))
+```
+
+The table summarizes the previous discussion on RMSE and coverage probability when applying the final model to the test and validation data sets. Overall, the model performed the best on validation data given the lowest RMSE while the worst is on test data set. Coverage probabilities on test and validation data sets are above the 95% threshold, meaning that the final model captures the true house price at least 95% of the time.
+
+------------------------------------------------------------------------
+
+## Part 5 Conclusion
+
+```{r}
+summary(final_model)
+```
+
+------------------------------------------------------------------------
+
+In conclusion, the final model indicates that `Overall.Qual`, `area`, `BsmtFin.SF.1`, `Exter.Qual`, `Garage.Area`, `Bldg.Type`, `Year.Built`, and `Lot.Area` are predictors of `price`. More specific, a house will be more expensive when satisfies the following conditions:
+
+1. The quality of its materials (including exterior materials) and finish are in a higher condition (i.e., excellent, good).
+
+2. It has larger total area, finished basement area, garage area, and lot area in square feet.\
+
+3. Its building type is not "single-family detached".
+
+4. Its original construction date should be as recent as possible.
+
+------------------------------------------------------------------------
